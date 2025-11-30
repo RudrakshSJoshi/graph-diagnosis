@@ -25,7 +25,7 @@ Defines and runs the server.
 Exposes two endpoints:
 
 - `POST /refresh` — resets both memory stores (`list` memory and `chat` memory).  
-- `POST /query` — receives a query string and optionally `first_query`, then pipes it through `graph_func.examine_query()`.
+- `POST /query` — receives a query string and `query_num`, then pipes it through `graph_func.examine_query()`.
 
 It also loads environment variables, initializes middleware, and starts the FastAPI app.
 
@@ -90,7 +90,7 @@ Body:
 ```json
 {
   "query": "user message here",
-  "first_query": true
+  "query_num": 1 // 1 based numbering
 }
 ```
 

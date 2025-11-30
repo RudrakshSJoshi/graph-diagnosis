@@ -1,10 +1,10 @@
 import json
 import os
-import numpy as np
+# import numpy as np
 import re
 from typing import Tuple, Optional, List, Dict, Any
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+# from sentence_transformers import SentenceTransformer
+# from sklearn.metrics.pairwise import cosine_similarity
 from utils import *
 
 # ==========================================
@@ -229,7 +229,7 @@ def examine_query(query: str, first_query: bool = True) -> Tuple[str, bool]:
         llm_response_str = invoke_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt_content,
-            model_id="llama-3.3-70b-versatile",
+            model_id="openai/gpt-oss-120b",
             structured_schema=output_schema
         )
         
@@ -248,3 +248,121 @@ def examine_query(query: str, first_query: bool = True) -> Tuple[str, bool]:
     process_memory("chat", "append", [reply_text])
 
     return reply_text, continue_flag
+
+def examine_query2(query: str, first_query: bool = True, punish_factor: int = 1) -> Tuple[str, bool]:
+    """
+    Version 2 of examine_query for testing purposes.
+    """
+    print(punish_factor)
+    can_ask = "You cannot ask any more questions, you must give a final diagnosis." if punish_factor == 3 else "You may ask clarifying questions to narrow down the diagnosis, only if required."
+    print(can_ask)
+    system_prompt = f"""
+You are a medical diagnostic assistant. The user gives human-level symptoms. Your goal: narrow plausible diagnoses to one final diagnosis or, if not allowed to ask more, list diagnoses and next-step testing.
+
+OUTPUT FORMAT (must follow exactly):
+
+<THINK>
+Private reasoning only. Include short notes used to pick diagnoses and session counters:
+{can_ask}
+Do NOT reveal <THINK> contents in <RESPONSE>.
+If you cannot ask any more questions, the response MUST NOT contain any question.
+</THINK>
+
+<DISEASES>
+Comma-separated list of plausible diagnoses (always present). First turn: list ALL plausible diseases.
+</DISEASES>
+
+<RESPONSE>
+If can_ask_more_questions is True and clarification is needed:
+  - Ask ONE short diagnostic question that eliminates ≥1 disease. No filler.
+If can_ask_more_questions is False OR no clarification needed:
+  - If multiple diagnoses remain: list the tests/doctor that would definitively distinguish them, and give clear interim recommendations (care, precautions, red flags).
+  - If single diagnosis: state the diagnosis and provide full, actionable recommendations.
+</RESPONSE>
+
+<CONTINUE>
+True or False. True only if you require one short clarifying answer to narrow diagnoses AND can_ask_more_questions is True. If can_ask_more_questions is False, CONTINUE must be False.
+</CONTINUE>
+
+RULES (short):
+1. First turn: list all plausible diseases.
+2. Subsequent turns MUST reduce the number of diseases in <DISEASES> when asking a question.
+3. Questions (when allowed) must be diagnostic, binary/comparative, and eliminate ≥1 disease.
+4. If can_ask_more_questions is False:
+   - Do NOT ask questions in <RESPONSE>.
+   - Provide all plausible diagnoses in <DISEASES>, specify which specialist/doctor and which test (e.g., X-ray, ultrasound, CBC, PCR, MRI) will distinguish them, and give practical interim advice and red flags.
+5. When <CONTINUE> is False and a single diagnosis is given, <DISEASES> must contain exactly one diagnosis and <RESPONSE> must include clear care/recommendations and red flags.
+6. Prioritize common conditions over rare ones unless symptoms strongly indicate otherwise.
+7. Always include urgent red-flag instructions if present."""
+
+    # First query handling
+    if first_query:
+        print(query)
+        response = invoke_llm(
+            system_prompt=system_prompt,
+            user_prompt=query,
+            model_id="openai/gpt-oss-120b"
+        )
+
+        print(response)
+
+        # Extract <DISEASES> block
+        disease_block = response.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
+
+        # Convert to list of diseases (split on commas, trim whitespace, drop empties)
+        disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
+
+        # Extract <RESPONSE> block
+        user_response = response.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
+
+        process_memory("list", "update", disease_list)
+        process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
+
+        continue_flag = response.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
+
+        if continue_flag:
+            return user_response, True
+
+        return user_response, False
+    
+    else:
+        # Subsequent queries
+        current_diseases = process_memory("list", "fetch")
+        past_convo = process_memory("chat", "fetch")
+        previous_diagnosis = ", ".join(current_diseases)
+        user_prompt = f"Current possible diagnoses: {previous_diagnosis}\n\nPast conversation:\n" + "\n".join(past_convo) + f"\n\nUser follow-up: {query}"
+        print(user_prompt)
+        response = invoke_llm(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_id="openai/gpt-oss-120b"
+        )
+
+        print(response)
+
+        disease_block = response.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
+        disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
+        user_response = response.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
+
+        process_memory("list", "update", disease_list)
+        process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
+
+        continue_flag = response.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
+
+        if punish_factor == 3:
+            system_prompt = "Give the final diagnosis and complete recommendations based on the entire conversation. No ambiguity, or you will be punished."
+            total_chat = process_memory("chat", "fetch")
+            user_prompt = "I am not giving you any more information. Based on the entire conversation, provide a final diagnosis and complete recommendations.\n\n"
+            user_prompt += "\n".join(total_chat)
+            user_prompt += "\n\nPossible diagnoses: " + ", ".join(disease_list)
+            final_response = invoke_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_id="openai/gpt-oss-120b"
+            )
+            return final_response, False
+        
+        if continue_flag and punish_factor < 3:
+            return user_response, True
+        
+        return user_response, False

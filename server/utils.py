@@ -150,9 +150,9 @@ def update_memory(form: str, items: Optional[List[str]]) -> bool:
 def invoke_llm(
     system_prompt: str = "",
     user_prompt: str = "",
-    model_id: str = "llama-3.3-70b-versatile",
+    model_id: str = "openai/gpt-oss-120b",
     temperature: float = 0.5,
-    max_completion_tokens: int = 1024,
+    max_completion_tokens: int = 2048,
     top_p: float = 1.0,
     structured_schema: Optional[Dict[str, Any]] = None,
 ) -> str:

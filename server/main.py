@@ -42,8 +42,7 @@ def startup_event():
 
 class QueryIn(BaseModel):
     query: str
-    first_query: Optional[bool] = True
-
+    query_num: int = 1
 
 @app.post("/refresh")
 def refresh():
@@ -69,13 +68,14 @@ def query_endpoint(payload: QueryIn):
     Returns JSON: {"response": "<string>", "continue": <bool>}
     """
     q = payload.query
-    first = bool(payload.first_query)
+    num_query = payload.query_num
+    first_query = (num_query == 1)
 
     if not isinstance(q, str) or q.strip() == "":
         raise HTTPException(status_code=400, detail="`query` must be a non-empty string.")
 
     try:
-        response, continue_flag = graph_func.examine_query(query=q, first_query=first)
+        response, continue_flag = graph_func.examine_query2(query=q, first_query=first_query, punish_factor=num_query)
 
         if not (isinstance(response, str) and isinstance(continue_flag, bool)):
             raise ValueError("graph_func.examine_query must return (str, bool)")
