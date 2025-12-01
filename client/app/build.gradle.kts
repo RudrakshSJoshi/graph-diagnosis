@@ -16,6 +16,15 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 1. Read the URL from gradle.properties, or use a default if missing
+        val activeUrl = project.findProperty("SERVER_URL") as? String ?: "http://172.25.37.29:8000/"
+
+
+        // 2. Inject this into the code as a String called BASE_URL
+        // This is correct Kotlin DSL syntax
+        buildConfigField("String", "BASE_URL", "\"${activeUrl}\"")
+
     }
 
     buildTypes {
@@ -36,6 +45,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig=true
     }
 }
 

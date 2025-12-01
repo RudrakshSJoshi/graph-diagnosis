@@ -2,9 +2,11 @@ package com.example.medicaldocai.backendconnect
 
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import com.example.medicaldocai.BuildConfig // Import the generated config
 
 object RetrofitClient {
-    private const val BASE_URL = "http://172.25.37.29:8000/" // Example API
+    // Use the variable we defined in build.gradle
+    private const val BASE_URL = BuildConfig.BASE_URL
 
     val api: ApiService by lazy {
         Retrofit.Builder()
