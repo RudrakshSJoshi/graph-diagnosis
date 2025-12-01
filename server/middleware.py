@@ -17,6 +17,7 @@ def configure_middleware(app: FastAPI):
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        
     )
 
     return app
