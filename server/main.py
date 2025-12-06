@@ -25,7 +25,8 @@ from pydantic import BaseModel
 import utils
 import graph_func
 import middleware
-
+load_dotenv()
+print("GROQ_API_KEY loaded:", os.getenv("GROQ_API_KEY"))
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("chat-backend")
@@ -37,8 +38,7 @@ middleware.configure_middleware(app)
 
 @app.on_event("startup")
 def startup_event():
-    load_dotenv()
-    # print("GROQ_API_KEY loaded:", os.getenv("GROQ_API_KEY"))
+    pass
 
 class QueryIn(BaseModel):
     query: str
