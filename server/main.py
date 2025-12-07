@@ -39,6 +39,15 @@ middleware.configure_middleware(app)
 def startup_event():
     load_dotenv()
     # print("GROQ_API_KEY loaded:", os.getenv("GROQ_API_KEY"))
+    
+    # Initialize RAG system once at startup (precompute/load embeddings)
+    logger.info("Initializing RAG system at startup...")
+    try:
+        graph_func.get_rag_system()
+        logger.info("RAG system initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize RAG system: {e}")
+        # Continue startup even if RAG fails - it will be retried on first query
 
 class QueryIn(BaseModel):
     query: str
@@ -75,7 +84,7 @@ def query_endpoint(payload: QueryIn):
         raise HTTPException(status_code=400, detail="`query` must be a non-empty string.")
 
     try:
-        response, continue_flag = graph_func.examine_query2(query=q, first_query=first_query, punish_factor=num_query)
+        response, continue_flag = graph_func.examine_query_hybrid(query=q, first_query=first_query, punish_factor=num_query)
 
         if not (isinstance(response, str) and isinstance(continue_flag, bool)):
             raise ValueError("graph_func.examine_query must return (str, bool)")

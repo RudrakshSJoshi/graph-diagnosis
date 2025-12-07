@@ -1,11 +1,15 @@
 import json
 import os
-# import numpy as np
+import numpy as np
+import pickle
 import re
 from typing import Tuple, Optional, List, Dict, Any
-# from sentence_transformers import SentenceTransformer
-# from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 from utils import *
+import logging
+
+logger = logging.getLogger("chat-backend")
 
 # ==========================================
 # RAG SYSTEM IMPLEMENTATION (Singleton)
@@ -25,19 +29,39 @@ class DiseaseRAGSystem:
         if self.initialized:
             return
 
-        print("--- LOADING RAG SYSTEM (This should only happen once) ---")
-        self.model = SentenceTransformer(model_name)
-        
-        # Resolve path relative to this script
-        if json_file_path is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            json_file_path = os.path.join(base_dir, 'data', 'medical_dataset.json')
+        print("--- LOADING RAG SYSTEM (This should only happen once at startup) ---")
+        try:
+            self.model = SentenceTransformer(model_name)
 
-        self.diseases_data = self._load_data(json_file_path)
-        # 1. Precompute and store embeddings (Optimization requested)
-        self.symptom_embeddings = self._precompute_symptom_embeddings()
-        self.initialized = True
-        print("--- RAG SYSTEM LOADED SUCCESSFULLY ---")
+            # Resolve path relative to this script
+            if json_file_path is None:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                json_file_path = os.path.join(base_dir, 'data', 'medical_dataset.json')
+            
+            # Path for persistent embeddings storage
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.embeddings_cache_path = os.path.join(base_dir, 'data', 'symptom_embeddings.pkl')
+
+            self.diseases_data = self._load_data(json_file_path)
+            
+            # Load or precompute embeddings (persistent storage optimization)
+            if os.path.exists(self.embeddings_cache_path):
+                print("--- Loading precomputed embeddings from cache ---")
+                self.symptom_embeddings = self._load_embeddings()
+            else:
+                print("--- Computing embeddings for the first time (this may take a moment) ---")
+                self.symptom_embeddings = self._precompute_symptom_embeddings()
+                self._save_embeddings()
+            
+            self.initialized = True
+            print("--- RAG SYSTEM LOADED SUCCESSFULLY ---")
+        except Exception as e:
+            # Log full stacktrace so we know why initialization failed
+            logger.exception("RAG system initialization failed")
+            # Ensure instance remains marked uninitialized so future attempts can retry
+            self.initialized = False
+            # Re-raise so calling code can decide how to handle it
+            raise
 
     def _load_data(self, json_file_path):
         try:
@@ -61,6 +85,27 @@ class DiseaseRAGSystem:
                 'embeddings': embeddings
             }
         return symptom_embeddings
+    
+    def _save_embeddings(self):
+        """Save precomputed embeddings to disk for faster subsequent startups."""
+        try:
+            with open(self.embeddings_cache_path, 'wb') as f:
+                pickle.dump(self.symptom_embeddings, f)
+            print(f"--- Embeddings saved to {self.embeddings_cache_path} ---")
+        except Exception as e:
+            logger.warning(f"Failed to save embeddings cache: {e}")
+    
+    def _load_embeddings(self):
+        """Load precomputed embeddings from disk."""
+        try:
+            with open(self.embeddings_cache_path, 'rb') as f:
+                embeddings = pickle.load(f)
+            print(f"--- Loaded {len(embeddings)} disease embeddings from cache ---")
+            return embeddings
+        except Exception as e:
+            logger.warning(f"Failed to load embeddings cache: {e}")
+            # Fallback to recomputing
+            return self._precompute_symptom_embeddings()
 
     def extract_symptoms_by_sentence(self, query, similarity_threshold=0.45):
         # Split query into sentences
@@ -110,11 +155,12 @@ class DiseaseRAGSystem:
             
             disease_info = next((item for item in self.diseases_data if item["disease"] == disease), None)
             
+            # Convert numpy types to native Python types for JSON serialization
             disease_scores[disease] = {
-                'score': score,
-                'matched_symptoms': [s[0] for s in matches],
-                'num_matches': len(matches),
-                'total_symptoms': num_disease_symptoms,
+                'score': float(score),
+                'matched_symptoms': [str(s[0]) for s in matches],
+                'num_matches': int(len(matches)),
+                'total_symptoms': int(num_disease_symptoms),
                 'all_symptoms': disease_info['symptoms'] if disease_info else [],
                 'precautions': disease_info['precautions'] if disease_info else []
             }
@@ -157,212 +203,273 @@ class DiseaseRAGSystem:
 
 # Global helper to ensure we don't load the model on every request
 def get_rag_system():
+    print("--- get_rag_system called ---")
     return DiseaseRAGSystem()
 
 # ==========================================
 # MAIN LOGIC (examine_query)
 # ==========================================
 
-def examine_query(query: str, first_query: bool = True) -> Tuple[str, bool]:
+def examine_query2(query: str, first_query: bool = False, punish_factor: int = 1) -> Tuple[str, bool]:
     """
-    Main handler for the medical RAG bot.
+    Dedicated Subsequent-Turn Agent: Handles follow-up queries using chat history 
+    and a working list of diseases to narrow the diagnosis.
     """
-    # 1. Update memory with User Input
-    process_memory("chat", "append", [query])
+    
+    # ----------------------------------------------------------------------
+    # 1. Error Guard (The function should ideally not be called with first_query=True in this context)
+    # ----------------------------------------------------------------------
+    if first_query:
+        print("Warning: examine_query2 called with first_query=True. Proceeding to invoke LLM based on internal memory.")
 
-    # 2. Get RAG Instance and Run Diagnosis
-    # Note: RAG logic is internal; we don't return this raw dict to the user.
-    # We pass it to the Agentic LLM.
-    try:
-        rag = get_rag_system()
-        diagnosis_result = rag.diagnose(query, top_k=5)
-    except Exception as e:
-        # Fallback if RAG fails
-        diagnosis_result = {"status": "error", "message": str(e)}
-
-    # 3. Agentic LLM Evaluation
-    # We create a specific prompt that gives the LLM the RAG data and instructions
-    # on how to behave based on the quality of that data.
-
-    system_prompt = (
-        "You are an expert medical AI assistant. You act as a supervisor for a RAG (Retrieval Augmented Generation) system. "
-        "You will receive a User Query and a JSON Diagnosis Result from the database. "
-        "Your goal is to evaluate the result and formulate a response.\n\n"
-        
-        "RULES FOR DECISION MAKING:\n"
-        "1. GOOD MATCHES: If 'top_diseases' contains diseases with reasonable scores, summarize the top results (up to 5). "
-        "Provide the disease names and their specific precautions listed in the JSON. "
-        "Format it in a clear, comforting, user-friendly markdown way. "
-        "Set 'should_continue' to false.\n\n"
-        
-        "2. POOR/CONFUSING MATCHES: If the user query was too short, vague, or resulted in conflicting low-confidence matches "
-        "(or if you need more info to distinguish between them), ask the user clarifying questions. "
-        "Set 'should_continue' to true.\n\n"
-        
-        "3. NO MATCH / POOR SCORES: If the RAG system returned 'no_match' or very weak results for all diseases, "
-        "use your own internal medical knowledge to provide a helpful answer based on the symptoms described. "
-        "However, explicitly state that the specific condition was not found in the local database. "
-        "Set 'should_continue' to false."
-    )
-
-    rag_context = json.dumps(diagnosis_result, indent=2)
-    user_prompt_content = f"USER QUERY: {query}\n\nRAG SYSTEM OUTPUT:\n{rag_context}"
-
-    # Define the schema to force the LLM to make a binary decision and formatted string
-    output_schema = {
-        "type": "object",
-        "properties": {
-            "response_text": {
-                "type": "string", 
-                "description": "The final natural language response to show the user."
-            },
-            "should_continue": {
-                "type": "boolean", 
-                "description": "True if we need to ask more questions, False if we have provided an answer."
-            }
-        },
-        "required": ["response_text", "should_continue"]
-    }
-
-    # 4. Invoke LLM
-    try:
-        llm_response_str = invoke_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt_content,
-            model_id="openai/gpt-oss-120b",
-            structured_schema=output_schema
-        )
-        
-        # Parse the JSON response from LLM
-        llm_response = json.loads(llm_response_str)
-        reply_text = llm_response["response_text"]
-        continue_flag = llm_response["should_continue"]
-
-    except Exception as e:
-        # Fallback if LLM invocation fails
-        reply_text = "I'm having trouble analyzing the medical database right now. Please try again later."
-        continue_flag = False
-        print(f"LLM Error: {e}")
-
-    # 5. Update Memory with Bot Response
-    process_memory("chat", "append", [reply_text])
-
-    return reply_text, continue_flag
-
-def examine_query2(query: str, first_query: bool = True, punish_factor: int = 1) -> Tuple[str, bool]:
-    """
-    Version 2 of examine_query for testing purposes.
-    """
+    # ----------------------------------------------------------------------
+    # 2. Setup Context and System Prompt
+    # ----------------------------------------------------------------------
     print(punish_factor)
     can_ask = "You cannot ask any more questions, you must give a final diagnosis." if punish_factor == 3 else "You may ask clarifying questions to narrow down the diagnosis, only if required."
     print(can_ask)
+    
+    # Fetch current state from memory (from the first turn or previous subsequent turn)
+    current_diseases = process_memory("list", "fetch")
+    past_convo = process_memory("chat", "fetch")
+    previous_diagnosis = ", ".join(current_diseases)
+
+    # The system prompt is focused on iterative refinement
     system_prompt = f"""
-You are a medical diagnostic assistant. The user gives human-level symptoms. Your goal: narrow plausible diagnoses to one final diagnosis or, if not allowed to ask more, list diagnoses and next-step testing.
+You are a friendly, expert medical diagnostic assistant engaged in a multi-turn conversation. Your goal is to narrow the current list of plausible diagnoses to one final diagnosis.
+
+**CONTEXT:**
+You have access to the full 'Past conversation' and the 'Current possible diagnoses'.
+
+**DECISION RULES:**
+1.  **Final Diagnosis:** If the 'Current possible diagnoses' list contains only **one disease**, or if 'punish_factor' implies no more questions can be asked (punish_factor == 3), you MUST provide the final diagnosis.
+    * **Response Style:** State the diagnosis and provide **full, actionable recommendations (precautions)** in a **warm, reassuring, and friendly tone**, using clear markdown formatting (like bullet points). Set <CONTINUE> to False.
+2.  **Continue Narrowing:** If the list contains **multiple diseases** and you are allowed to ask questions, ask **ONE short, diagnostic question** based on the user's latest answer, aiming to eliminate at least one disease. Set <CONTINUE> to True.
 
 OUTPUT FORMAT (must follow exactly):
 
 <THINK>
-Private reasoning only. Include short notes used to pick diagnoses and session counters:
-{can_ask}
+Private reasoning only. Include short notes used to track which diseases were eliminated and the justification for the next question or final diagnosis.
 Do NOT reveal <THINK> contents in <RESPONSE>.
-If you cannot ask any more questions, the response MUST NOT contain any question.
 </THINK>
 
 <DISEASES>
-Comma-separated list of plausible diagnoses (always present). First turn: list ALL plausible diseases.
+Comma-separated list of the **remaining plausible diagnoses**. This list MUST be a subset of the previous list unless the user's answer forces re-evaluation. If giving a final diagnosis, this list MUST contain exactly one disease.
 </DISEASES>
 
 <RESPONSE>
-If can_ask_more_questions is True and clarification is needed:
-  - Ask ONE short diagnostic question that eliminates ≥1 disease. No filler.
-If can_ask_more_questions is False OR no clarification needed:
-  - If multiple diagnoses remain: list the tests/doctor that would definitively distinguish them, and give clear interim recommendations (care, precautions, red flags).
-  - If single diagnosis: state the diagnosis and provide full, actionable recommendations.
+If <CONTINUE> is True:
+  - Ask ONE short diagnostic question that eliminates ≥1 disease.
+If <CONTINUE> is False (Final Answer):
+  - **If single diagnosis:** State the diagnosis and provide the full, actionable recommendations in a friendly, medical assistant tone.
+  - **If multiple diagnoses (final turn due to punish_factor=3):** List the tests/doctor that would definitively distinguish them, and give clear interim recommendations (care, precautions, red flags).
+</RESPONSE>
+
+<CONTINUE>
+True or False. True only if you need clarification AND are allowed to ask more questions. If punish_factor is 3, CONTINUE must be False.
+</CONTINUE>
+"""
+
+    # User Prompt for subsequent turn
+    user_prompt = f"Current possible diagnoses: {previous_diagnosis}\n\nPast conversation:\n" + "\n".join(past_convo) + f"\n\nUser follow-up: {query}"
+    print(user_prompt)
+    
+    # ----------------------------------------------------------------------
+    # 3. Invoke LLM and Parse Response
+    # ----------------------------------------------------------------------
+    response = invoke_llm(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_id="openai/gpt-oss-120b"
+    )
+
+    print(response)
+
+    # Extract blocks
+    try:
+        disease_block = response.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
+        disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
+    except IndexError:
+        disease_list = current_diseases # Retain old list on parsing failure
+        
+    try:
+        user_response = response.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
+    except IndexError:
+        user_response = "I encountered a parsing error during diagnosis. Could you please repeat your last piece of information?"
+
+    try:
+        continue_flag = response.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
+    except IndexError:
+        continue_flag = False
+
+    # ----------------------------------------------------------------------
+    # 4. Handle Punishment Factor (Final Override)
+    # ----------------------------------------------------------------------
+    if punish_factor == 3 and continue_flag:
+        # If the LLM incorrectly asked a question on the final turn, 
+        # we override the response with a final forced diagnosis.
+        system_prompt_final = f"""
+You are now forced to give a final diagnosis and complete recommendations based on the entire conversation. You must select one disease from the list: {", ".join(disease_list)}, and provide its recommendations in a **friendly, medical assistant tone** using clear markdown formatting. Do not ask any questions.
+"""
+        total_chat = process_memory("chat", "fetch")
+        user_prompt_final = "I am not giving you any more information. Based on the entire conversation, provide a final diagnosis and complete recommendations.\n\n"
+        user_prompt_final += "\n".join(total_chat)
+        user_prompt_final += "\n\nPossible diagnoses after last step: " + ", ".join(disease_list)
+        final_response = invoke_llm(
+            system_prompt=system_prompt_final,
+            user_prompt=user_prompt_final,
+            model_id="openai/gpt-oss-120b"
+        )
+        # Update memory one last time with the correct final response
+        process_memory("list", "update", [disease_list[0]] if disease_list else [])
+        process_memory("chat", "append", [f"Bot: {final_response}"])
+        return final_response, False
+
+    # ----------------------------------------------------------------------
+    # 5. Update Memory and Return
+    # ----------------------------------------------------------------------
+    process_memory("list", "update", disease_list)
+    process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
+
+    if continue_flag and punish_factor < 3:
+        return user_response, True
+    
+    # If continue_flag is False, or punish_factor is 3 (and we didn't hit the override):
+    return user_response, False
+
+def examine_query_hybrid(query: str, first_query: bool = True, punish_factor: int = 1) -> Tuple[str, bool]:
+    """
+    Hybrid handler for the medical RAG bot:
+    1. First Query (first_query=True): Uses RAG to retrieve top diseases, then passes to LLM for decision.
+       - If RAG result is conclusive, gives final answer (continue=False).
+       - If RAG result is inconclusive, transitions to multi-turn mode (continue=True).
+    2. Subsequent Queries (first_query=False): Uses the Agentic, memory-based logic of examine_query2.
+    """
+    print("--- examine_query_hybrid called ---")
+    
+    # ----------------------------------------------------------------------
+    # 1. Subsequent Queries: Fallback to examine_query2 logic
+    # ----------------------------------------------------------------------
+    if not first_query:
+        # Subsequent turns are handled entirely by the examine_query2 logic 
+        # (relying on memory, not RAG)
+        # Assuming examine_query2 is defined elsewhere and handles its own imports/logic
+        return examine_query2(query, first_query=False, punish_factor=punish_factor)
+
+    # ----------------------------------------------------------------------
+    # 1.5. Clear chat memory for new diagnosis session (first_query=True)
+    # ----------------------------------------------------------------------
+    print("--- Clearing chat memory for new diagnosis session ---")
+    process_memory("chat", "update", [])
+    
+    # ----------------------------------------------------------------------
+    # 2. First Query: Hybrid RAG + Agentic LLM
+    # ----------------------------------------------------------------------
+    
+    print("--- Running Hybrid RAG for First Query ---")
+    
+    # Run RAG Diagnosis (Retrieval Step)
+    try:
+        rag = get_rag_system() # Assuming get_rag_system is defined and works
+        # Retrieve up to 8 diseases as requested
+        diagnosis_result = rag.diagnose(query, top_k=8, similarity_threshold=0.45)
+    except Exception as e:
+        # Fallback if RAG fails
+        diagnosis_result = {"status": "error", "message": str(e)}
+
+    # Define the Agentic LLM System Prompt (Based on examine_query2, but tailored for RAG input)
+    can_ask = "You cannot ask any more questions, you must give a final diagnosis." if punish_factor == 3 else "You may ask clarifying questions to narrow down the diagnosis, only if required."
+    
+    # Extract the top diseases from the RAG result for the LLM prompt
+    top_diseases_rag = diagnosis_result.get('top_diseases', [])
+    initial_diagnoses = ", ".join([d['disease'] for d in top_diseases_rag])
+
+    # Provide the RAG result directly to the LLM for evaluation
+    rag_context = json.dumps(diagnosis_result, indent=2)
+
+    # --- START MODIFIED SYSTEM PROMPT ---
+    system_prompt = f"""
+You are a friendly, expert medical AI assistant. You will analyze a user's query and RAG context (a list of top 8 scored diseases).
+
+{can_ask}
+
+**CRITICAL RULE FOR FIRST TURN:**
+Evaluate the RAG Context (JSON):
+1.  **Clear Winner (High Confidence):** If one, two or three diseases have a significantly higher score than all others. You MUST provide a FINAL diagnosis.
+    * **Response Style:** State the final diagnosis for all the selected diseases separately and provide the diseases' precautions (from the JSON context) in a **warm, reassuring, and friendly tone**, like a medical assistant. Use bullet points for clarity. Set <CONTINUE> to False.
+2.  **Low Confidence / Tie:** If scores are too close, or all scores are very low (e.g., all under 0.2), you MUST start the iterative diagnostic process. Pick the top 5 diseases as plausible diagnoses and ask ONE clarifying question that aims to eliminate the most diseases. Set <CONTINUE> to True.
+3.  **No Match:** If 'status' is 'no_match', use your general knowledge and ask a clarifying question. Set <CONTINUE> to True.
+
+OUTPUT FORMAT (must follow exactly):
+
+<THINK>
+Private reasoning only. Include short notes used to pick diagnoses and your decision (Clear Winner/Low Confidence). Use the RAG scores to justify your choice.
+Do NOT reveal <THINK> contents in <RESPONSE>.
+</THINK>
+
+<DISEASES>
+Comma-separated list of all plausible diagnoses. If you found some Clear Winners, this list MUST contain only those diseases. If you need clarification, list the top 5 diseases.
+</DISEASES>
+
+<RESPONSE>
+If <CONTINUE> is True:
+  - Ask ONE short diagnostic question that helps distinguish between the diseases in <DISEASES>.
+If <CONTINUE> is False (Final Answer):
+  - **If single diagnosis:** State the diagnosis and provide the **precautions listed in the RAG context** in a friendly, medical assistant tone, using clear markdown formatting.
+  - **If multiple diagnoses (final turn):** List the tests/doctor that would definitively distinguish them, and give clear interim recommendations (care, precautions, red flags).
 </RESPONSE>
 
 <CONTINUE>
 True or False. True only if you require one short clarifying answer to narrow diagnoses AND can_ask_more_questions is True. If can_ask_more_questions is False, CONTINUE must be False.
 </CONTINUE>
+"""
+    # --- END MODIFIED SYSTEM PROMPT ---
 
-RULES (short):
-1. First turn: list all plausible diseases.
-2. Subsequent turns MUST reduce the number of diseases in <DISEASES> when asking a question.
-3. Questions (when allowed) must be diagnostic, binary/comparative, and eliminate ≥1 disease.
-4. If can_ask_more_questions is False:
-   - Do NOT ask questions in <RESPONSE>.
-   - Provide all plausible diagnoses in <DISEASES>, specify which specialist/doctor and which test (e.g., X-ray, ultrasound, CBC, PCR, MRI) will distinguish them, and give practical interim advice and red flags.
-5. When <CONTINUE> is False and a single diagnosis is given, <DISEASES> must contain exactly one diagnosis and <RESPONSE> must include clear care/recommendations and red flags.
-6. Prioritize common conditions over rare ones unless symptoms strongly indicate otherwise.
-7. Always include urgent red-flag instructions if present."""
+    user_prompt_content = f"USER QUERY: {query}\n\nRAG SYSTEM OUTPUT (Context):\n{rag_context}\n\nInitial Diagnoses from RAG: {initial_diagnoses}"
 
-    # First query handling
-    if first_query:
-        print(query)
-        response = invoke_llm(
+    # Invoke LLM
+    try:
+        # Assuming invoke_llm is defined and works
+        llm_response_str = invoke_llm(
             system_prompt=system_prompt,
-            user_prompt=query,
+            user_prompt=user_prompt_content,
             model_id="openai/gpt-oss-120b"
         )
-
-        print(response)
-
+        
+        # --- Parsing the LLM's Structured Output ---
+        
         # Extract <DISEASES> block
-        disease_block = response.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
-
-        # Convert to list of diseases (split on commas, trim whitespace, drop empties)
-        disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
+        try:
+            disease_block = llm_response_str.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
+            disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
+        except IndexError:
+            disease_list = [] # Handle parsing failure
 
         # Extract <RESPONSE> block
-        user_response = response.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
+        try:
+            user_response = llm_response_str.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
+        except IndexError:
+            user_response = "I encountered an error while processing the diagnosis. Please try rephrasing your symptoms."
 
-        process_memory("list", "update", disease_list)
-        process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
+        # Extract <CONTINUE> block
+        try:
+            continue_flag = llm_response_str.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
+        except IndexError:
+            continue_flag = False
 
-        continue_flag = response.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
+    except Exception as e:
+        # Fallback if LLM invocation fails (rate limit, network error, etc)
+        disease_list = [d['disease'] for d in top_diseases_rag[:5]] if top_diseases_rag else []
+        user_response = "I'm having trouble analyzing the medical data right now. Please try again later."
+        continue_flag = False
+        logger.exception(f"LLM Error during first query: {e}")
 
-        if continue_flag:
-            return user_response, True
-
-        return user_response, False
+    # --- Update Memory and Return ---
     
-    else:
-        # Subsequent queries
-        current_diseases = process_memory("list", "fetch")
-        past_convo = process_memory("chat", "fetch")
-        previous_diagnosis = ", ".join(current_diseases)
-        user_prompt = f"Current possible diagnoses: {previous_diagnosis}\n\nPast conversation:\n" + "\n".join(past_convo) + f"\n\nUser follow-up: {query}"
-        print(user_prompt)
-        response = invoke_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model_id="openai/gpt-oss-120b"
-        )
+    # Update memory with the diseases chosen by the LLM
+    # Assuming process_memory is defined and works
+    process_memory("list", "update", disease_list)
+    # Update chat memory
+    process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
 
-        print(response)
-
-        disease_block = response.split("<DISEASES>")[1].split("</DISEASES>")[0].strip()
-        disease_list = [d.strip() for d in disease_block.split(",") if d.strip()]
-        user_response = response.split("<RESPONSE>")[1].split("</RESPONSE>")[0].strip()
-
-        process_memory("list", "update", disease_list)
-        process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
-
-        continue_flag = response.split("<CONTINUE>")[1].split("</CONTINUE>")[0].strip().lower() == "true"
-
-        if punish_factor == 3:
-            system_prompt = "Give the final diagnosis and complete recommendations based on the entire conversation. No ambiguity, or you will be punished."
-            total_chat = process_memory("chat", "fetch")
-            user_prompt = "I am not giving you any more information. Based on the entire conversation, provide a final diagnosis and complete recommendations.\n\n"
-            user_prompt += "\n".join(total_chat)
-            user_prompt += "\n\nPossible diagnoses: " + ", ".join(disease_list)
-            final_response = invoke_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model_id="openai/gpt-oss-120b"
-            )
-            return final_response, False
-        
-        if continue_flag and punish_factor < 3:
-            return user_response, True
-        
-        return user_response, False
+    return user_response, continue_flag
