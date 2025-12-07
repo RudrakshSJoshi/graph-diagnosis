@@ -38,7 +38,7 @@ middleware.configure_middleware(app)
 @app.on_event("startup")
 def startup_event():
     load_dotenv()
-    # print("GROQ_API_KEY loaded:", os.getenv("GROQ_API_KEY"))
+    # print("GEMINI_API_KEY loaded:", os.getenv("GEMINI_API_KEY"))
     
     # Initialize RAG system once at startup (precompute/load embeddings)
     logger.info("Initializing RAG system at startup...")
