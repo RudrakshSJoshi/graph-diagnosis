@@ -1,4 +1,4 @@
-package com.example.medicaldocai.dataModels
+package com.example.medicaldocai.model
 
 import com.google.gson.annotations.SerializedName
 
@@ -17,4 +17,9 @@ data class QueryResponse(
     val response: String,
     @SerializedName("continue")
     val shouldContinue: Boolean
+)
+
+data class RefreshResponse(
+    @SerializedName("reset")
+    val reset: Boolean
 )
