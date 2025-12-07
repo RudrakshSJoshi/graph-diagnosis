@@ -1,0 +1,101 @@
+"""
+main.py
+
+FastAPI server for the chat backend.
+
+Endpoints:
+ - POST /refresh   -> clears both memories (list and chat); returns {"reset": True}
+ - POST /query     -> body: {"query": str, "first_query": bool (optional)}
+                     -> calls graph_func.examine_query(query, first_query)
+                     -> returns {"response": str, "continue": bool}
+
+Run:
+    python main.py
+"""
+
+import os
+import logging
+from typing import Optional
+from dotenv import load_dotenv
+
+from fastapi import FastAPI, HTTPException
+import uvicorn
+from pydantic import BaseModel
+
+import utils
+import graph_func
+import middleware
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("chat-backend")
+
+app = FastAPI(title="Chat Backend", version="0.1.0")
+
+# Apply middleware
+middleware.configure_middleware(app)
+
+@app.on_event("startup")
+def startup_event():
+    load_dotenv()
+    # print("GEMINI_API_KEY loaded:", os.getenv("GEMINI_API_KEY"))
+    
+    # Initialize RAG system once at startup (precompute/load embeddings)
+    logger.info("Initializing RAG system at startup...")
+    try:
+        graph_func.get_rag_system()
+        logger.info("RAG system initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize RAG system: {e}")
+        # Continue startup even if RAG fails - it will be retried on first query
+
+class QueryIn(BaseModel):
+    query: str
+    query_num: int = 1
+
+@app.post("/refresh")
+def refresh():
+    """
+    Reset all memories.
+    This endpoint performs a full reset of both 'list' and 'chat' memories.
+    """
+    try:
+        utils.process_memory(form="list", type="update", content=[])
+        utils.process_memory(form="chat", type="update", content=[])
+        logger.info("Memories reset by /refresh")
+        return {"reset": True}
+    except Exception as e:
+        logger.exception("Failed to reset memories")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/query")
+def query_endpoint(payload: QueryIn):
+    """
+    Accepts a JSON payload with 'query' and optional 'first_query' (bool).
+    Calls graph_func.examine_query(query, first_query) which should return (str, bool).
+    Returns JSON: {"response": "<string>", "continue": <bool>}
+    """
+    q = payload.query
+    num_query = payload.query_num
+    first_query = (num_query == 1)
+
+    if not isinstance(q, str) or q.strip() == "":
+        raise HTTPException(status_code=400, detail="`query` must be a non-empty string.")
+
+    try:
+        response, continue_flag = graph_func.examine_query_hybrid(query=q, first_query=first_query, punish_factor=num_query)
+
+        if not (isinstance(response, str) and isinstance(continue_flag, bool)):
+            raise ValueError("graph_func.examine_query must return (str, bool)")
+
+        return {"response": response, "continue": continue_flag}
+    except Exception as e:
+        logger.exception("Error in /query")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    # uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    Port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=Port, reload=True)
