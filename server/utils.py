@@ -136,15 +136,18 @@ def process_memory(form: str, type: str, content: Optional[List[str]] = None) ->
 
 # Convenience helpers (optional)
 def fetch_memory(form: str) -> List[str]:
-    return process_memory(form=form, type="fetch")
+    result = process_memory(form=form, type="fetch")
+    return result if isinstance(result, list) else []
 
 
 def append_memory(form: str, items: List[str]) -> bool:
-    return process_memory(form=form, type="append", content=items)
+    result = process_memory(form=form, type="append", content=items)
+    return bool(result)
 
 
 def update_memory(form: str, items: Optional[List[str]]) -> bool:
-    return process_memory(form=form, type="update", content=items)
+    result = process_memory(form=form, type="update", content=items)
+    return bool(result)
 
 # --- Public API for LLM invocation ----------------------------------------------
 def invoke_llm(

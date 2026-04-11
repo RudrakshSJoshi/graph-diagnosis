@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pickle
 import re
-from typing import Tuple, Optional, List, Dict, Any
+from typing import Tuple, Optional, List, Dict, Any, cast
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from utils import *
@@ -24,7 +24,7 @@ class DiseaseRAGSystem:
             cls._instance.initialized = False
         return cls._instance
 
-    def __init__(self, json_file_path: str = None, model_name: str = 'all-MiniLM-L6-v2'):
+    def __init__(self, json_file_path: Optional[str] = None, model_name: str = 'all-MiniLM-L6-v2'):
         # Prevent re-initialization if already initialized
         if self.initialized:
             return
@@ -124,7 +124,8 @@ class DiseaseRAGSystem:
                 embeddings = symptom_data['embeddings']
                 
                 # Calculate cosine similarity
-                similarities = cosine_similarity([sent_embedding], embeddings)[0]
+                sent_embedding_2d = np.asarray(sent_embedding).reshape(1, -1)
+                similarities = cosine_similarity(sent_embedding_2d, embeddings)[0]
                 
                 for symptom, similarity in zip(symptoms, similarities):
                     if similarity >= similarity_threshold:
@@ -206,6 +207,12 @@ def get_rag_system():
     print("--- get_rag_system called ---")
     return DiseaseRAGSystem()
 
+
+def _fetch_memory_list(form: str) -> List[str]:
+    """Normalize process_memory(fetch) union return to a list for type safety."""
+    data = process_memory(form, "fetch")
+    return cast(List[str], data) if isinstance(data, list) else []
+
 # ==========================================
 # MAIN LOGIC (examine_query)
 # ==========================================
@@ -230,8 +237,8 @@ def examine_query2(query: str, first_query: bool = False, punish_factor: int = 1
     print(can_ask)
     
     # Fetch current state from memory (from the first turn or previous subsequent turn)
-    current_diseases = process_memory("list", "fetch")
-    past_convo = process_memory("chat", "fetch")
+    current_diseases = _fetch_memory_list("list")
+    past_convo = _fetch_memory_list("chat")
     previous_diagnosis = ", ".join(current_diseases)
 
     # The system prompt is focused on iterative refinement
@@ -311,7 +318,7 @@ True or False. True only if you need clarification AND are allowed to ask more q
         system_prompt_final = f"""
 You are now forced to give a final diagnosis and complete recommendations based on the entire conversation. You must select one disease from the list: {", ".join(disease_list)}, and provide its recommendations in a **friendly, medical assistant tone** using clear markdown formatting. Do not ask any questions.
 """
-        total_chat = process_memory("chat", "fetch")
+        total_chat = _fetch_memory_list("chat")
         user_prompt_final = "I am not giving you any more information. Based on the entire conversation, provide a final diagnosis and complete recommendations.\n\n"
         user_prompt_final += "\n".join(total_chat)
         user_prompt_final += "\n\nPossible diagnoses after last step: " + ", ".join(disease_list)
@@ -381,7 +388,7 @@ def examine_query_hybrid(query: str, first_query: bool = True, punish_factor: in
     can_ask = "You cannot ask any more questions, you must give a final diagnosis." if punish_factor == 3 else "You may ask clarifying questions to narrow down the diagnosis, only if required."
     
     # Extract the top diseases from the RAG result for the LLM prompt
-    top_diseases_rag = diagnosis_result.get('top_diseases', [])
+    top_diseases_rag = cast(List[Dict[str, Any]], diagnosis_result.get('top_diseases', []))
     initial_diagnoses = ", ".join([d['disease'] for d in top_diseases_rag])
 
     # Provide the RAG result directly to the LLM for evaluation
