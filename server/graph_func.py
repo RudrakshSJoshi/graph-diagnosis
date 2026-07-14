@@ -149,9 +149,10 @@ class DiseaseRAGSystem:
         
         for disease, matches in disease_matches.items():
             num_disease_symptoms = len(self.symptom_embeddings[disease]['symptoms'])
+            num_matched_symptoms = len(matches)
             score = 0
             for symptom, similarity in matches:
-                base_score = (1.0 / num_disease_symptoms) + (1.0 / total_matched_symptoms)
+                base_score = (num_matched_symptoms / num_disease_symptoms) * (num_matched_symptoms / total_matched_symptoms)
                 score += base_score * similarity
             
             disease_info = next((item for item in self.diseases_data if item["disease"] == disease), None)
