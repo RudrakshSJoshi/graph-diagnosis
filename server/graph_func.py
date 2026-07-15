@@ -11,9 +11,7 @@ import logging
 
 logger = logging.getLogger("chat-backend")
 
-# ==========================================
 # RAG SYSTEM IMPLEMENTATION (Singleton)
-# ==========================================
 
 class DiseaseRAGSystem:
     _instance = None
@@ -214,9 +212,7 @@ def _fetch_memory_list(form: str) -> List[str]:
     data = process_memory(form, "fetch")
     return cast(List[str], data) if isinstance(data, list) else []
 
-# ==========================================
 # MAIN LOGIC (examine_query)
-# ==========================================
 
 def examine_query2(query: str, first_query: bool = False, punish_factor: int = 1) -> Tuple[str, bool]:
     """
@@ -224,15 +220,15 @@ def examine_query2(query: str, first_query: bool = False, punish_factor: int = 1
     and a working list of diseases to narrow the diagnosis.
     """
     
-    # ----------------------------------------------------------------------
-    # 1. Error Guard (The function should ideally not be called with first_query=True in this context)
-    # ----------------------------------------------------------------------
+
+    # Error Guard (The function should ideally not be called with first_query=True in this context)
+
     if first_query:
         print("Warning: examine_query2 called with first_query=True. Proceeding to invoke LLM based on internal memory.")
 
-    # ----------------------------------------------------------------------
-    # 2. Setup Context and System Prompt
-    # ----------------------------------------------------------------------
+
+    # Setup Context and System Prompt
+    
     print(punish_factor)
     can_ask = "You cannot ask any more questions, you must give a final diagnosis." if punish_factor == 3 else "You may ask clarifying questions to narrow down the diagnosis, only if required."
     print(can_ask)
@@ -282,9 +278,8 @@ True or False. True only if you need clarification AND are allowed to ask more q
     user_prompt = f"Current possible diagnoses: {previous_diagnosis}\n\nPast conversation:\n" + "\n".join(past_convo) + f"\n\nUser follow-up: {query}"
     print(user_prompt)
     
-    # ----------------------------------------------------------------------
-    # 3. Invoke LLM and Parse Response
-    # ----------------------------------------------------------------------
+    # Invoke LLM and Parse Response
+    
     response = invoke_llm(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -310,9 +305,7 @@ True or False. True only if you need clarification AND are allowed to ask more q
     except IndexError:
         continue_flag = False
 
-    # ----------------------------------------------------------------------
-    # 4. Handle Punishment Factor (Final Override)
-    # ----------------------------------------------------------------------
+    # Handle Punishment Factor (Final Override)
     if punish_factor == 3 and continue_flag:
         # If the LLM incorrectly asked a question on the final turn, 
         # we override the response with a final forced diagnosis.
@@ -333,9 +326,8 @@ You are now forced to give a final diagnosis and complete recommendations based 
         process_memory("chat", "append", [f"Bot: {final_response}"])
         return final_response, False
 
-    # ----------------------------------------------------------------------
-    # 5. Update Memory and Return
-    # ----------------------------------------------------------------------
+    # Update Memory and Return
+    
     process_memory("list", "update", disease_list)
     process_memory("chat", "append", [f"User: {query}", f"Bot: {user_response}"])
 
@@ -355,24 +347,23 @@ def examine_query_hybrid(query: str, first_query: bool = True, punish_factor: in
     """
     print("--- examine_query_hybrid called ---")
     
-    # ----------------------------------------------------------------------
-    # 1. Subsequent Queries: Fallback to examine_query2 logic
-    # ----------------------------------------------------------------------
+    # Subsequent Queries: Fallback to examine_query2 logic
+
     if not first_query:
         # Subsequent turns are handled entirely by the examine_query2 logic 
         # (relying on memory, not RAG)
         # Assuming examine_query2 is defined elsewhere and handles its own imports/logic
         return examine_query2(query, first_query=False, punish_factor=punish_factor)
 
-    # ----------------------------------------------------------------------
-    # 1.5. Clear chat memory for new diagnosis session (first_query=True)
-    # ----------------------------------------------------------------------
+
+    # Clear chat memory for new diagnosis session (first_query=True)
+
     print("--- Clearing chat memory for new diagnosis session ---")
     process_memory("chat", "update", [])
     
-    # ----------------------------------------------------------------------
-    # 2. First Query: Hybrid RAG + Agentic LLM
-    # ----------------------------------------------------------------------
+
+    # First Query: Hybrid RAG + Agentic LLM
+
     
     print("--- Running Hybrid RAG for First Query ---")
     
